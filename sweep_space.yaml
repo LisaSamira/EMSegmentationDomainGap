@@ -1,0 +1,42 @@
+# Suchraum für den W&B-Sweep. Hier anpassen, ohne Python-Code anzufassen.
+# Syntax: https://docs.wandb.ai/guides/sweeps/define-sweep-configuration
+method: bayes                 # grid | random | bayes
+metric:
+  name: val/best_iou          # monoton steigendes Maximum der Val-IoU (Auswahl nur über Val, nicht Test!)
+  goal: maximize
+early_terminate:              # bricht schlechte Läufe früh ab (min_iter zählt geloggte Epochen)
+  type: hyperband
+  min_iter: 10
+  eta: 3
+
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 1.0e-4
+    max: 3.0e-3
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1.0e-6
+    max: 1.0e-1
+  batch_size:
+    values: [4, 8, 16]
+  head_channels:
+    values: [128, 256]
+  head_dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.3
+  dice_weight:
+    values: [0.5, 1.0]
+  n_feature_layers:
+    values: [1, 4]
+
+# Überschreibt/ergänzt Parameter nur für eine bestimmte Trainingsgröße.
+# Kleine Datensätze -> mehr Epochen, damit die Zahl der Optimierungsschritte vergleichbar bleibt.
+per_train_size:
+  13:  { epochs: { value: 200 } }
+  25:  { epochs: { value: 150 } }
+  50:  { epochs: { value: 100 } }
+  100: { epochs: { value: 60 } }
+  200: { epochs: { value: 40 } }
+  400: { epochs: { value: 30 } }

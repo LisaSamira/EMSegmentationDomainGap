@@ -1,0 +1,7 @@
+torch>=2.2
+torchvision>=0.17
+transformers>=4.56   # DINOv3-Unterstützung
+tifffile>=2023.7
+numpy
+wandb>=0.17
+pyyaml
