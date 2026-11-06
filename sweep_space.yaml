@@ -34,7 +34,7 @@ parameters:
 # Überschreibt/ergänzt Parameter nur für eine bestimmte Trainingsgröße.
 # Kleine Datensätze -> mehr Epochen, damit die Zahl der Optimierungsschritte vergleichbar bleibt.
 per_train_size:
-  13:  { epochs: { value: 200 } }
+  15:  { epochs: { value: 200 } }
   25:  { epochs: { value: 150 } }
   50:  { epochs: { value: 100 } }
   100: { epochs: { value: 60 } }

@@ -1,7 +1,7 @@
 """Epochen-basiertes Training + Evaluation (Foreground-IoU, Dice) mit Zeitmessung und W&B-Logging.
 
 Einzelner Lauf:
-    python train.py --data_root /pfad/cem_mitolab --datasets "Sub1,Sub2" --train_size 25
+    python train.py --data_root /pfad/cem_mitolab --datasets "Bleck2018_SoleusBV2" --train_size 25
 Alle Keys aus DEFAULTS sind als --key Wert überschreibbar (auch durch einen wandb-Sweep).
 """
 from __future__ import annotations
@@ -25,11 +25,11 @@ from model import build_model
 DEFAULTS = dict(
     # --- Daten ---
     data_root="data/EMPIAR-11037/data/cem_mitolab",
-    datasets="all",            # "all" oder komma-getrennte Sub-Datensätze
-    train_size=25,             # 13 | 25 | 50 | 100 | 200 | 400
+    datasets="Bleck2018_SoleusBV2",  # genau ein Sub-Datensatz (Datensätze für saubere Domänen nicht mischen!)
+    train_size=25,             # 15 | 25 | 50 | 100 | 200 | 400
     val_size=25,               # fest, unabhängig von train_size
     test_size=25,              # fest, unabhängig von train_size
-    split_mode="random",       # "random" | "contiguous"
+    split_mode="contiguous",   # Standard: "contiguous" verhindert Z-Slice-Leakage bei 3D-Volumina; sonst "random"
     split_seed=0,
     img_size=448,              # Vielfaches von 16 (Patchgröße DINOv3)
     num_workers=4,
@@ -58,9 +58,9 @@ DEFAULTS = dict(
     amp=True,
     seed=0,
     # --- Logging ---
-    wandb_project="mito-em-datasize",
+    wandb_project="sdg-datasize-tests",
     wandb_entity=None,
-    wandb_mode="online",       # online | offline | disabled
+    wandb_mode="online",       # online | offline (only saves logs locally in wandb/ folder) | disabled
     out_dir="runs",
 )
 

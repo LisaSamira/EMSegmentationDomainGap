@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import re
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,15 +44,41 @@ class Pair:
         return f"{self.dataset}/{self.image.name}"
 
 
+def natural_sort_key(s: str) -> tuple[list[tuple[int, int | str]], str]:
+    """Zerlegt einen String für 'Natural Sorting' (z. B. heart_image2 vor heart_image10).
+
+    Verhindert Typ-Konflikte (str vs. int in Python 3) durch getypte 2-Tupel:
+    (0, str_lower) für Text, (1, int_val) für Zahlenblöcke.
+    Garantiert deterministisches, stabiles Sortieren über heterogene Benennungsschemata
+    (LOC-Tags, ROI-Tags, unpadded Slice-Nummern, Hashes).
+    """
+    tokens = re.split(r"(\d+)", s)
+    key: list[tuple[int, int | str]] = []
+    for t in tokens:
+        if not t:
+            continue
+        if t.isdigit():
+            key.append((1, int(t)))
+        else:
+            key.append((0, t.lower()))
+    return (key, s)
+
+
 def _list_tiffs(folder: Path) -> list[Path]:
-    return sorted(p for p in folder.iterdir() if p.suffix.lower() in TIFF_EXTS)
+    return sorted(
+        (p for p in folder.iterdir() if p.suffix.lower() in TIFF_EXTS),
+        key=lambda p: natural_sort_key(p.name),
+    )
 
 
 def list_datasets(root: str | Path) -> dict[str, int]:
     """Alle Sub-Datensätze (Ordner mit images/ und masks/) samt Bildanzahl."""
     root = Path(root)
     out = {}
-    for d in sorted(p for p in root.iterdir() if p.is_dir()):
+    for d in sorted(
+        (p for p in root.iterdir() if p.is_dir()),
+        key=lambda p: natural_sort_key(p.name),
+    ):
         if (d / "images").is_dir() and (d / "masks").is_dir():
             out[d.name] = len(_list_tiffs(d / "images"))
     return out
@@ -99,19 +126,23 @@ def make_splits(
     n_val: int,
     n_test: int,
     split_seed: int = 0,
-    mode: str = "random",
+    mode: str = "contiguous",
 ) -> dict[str, list[Pair]]:
     """Feste Val-/Test-Mengen + geschachtelte Trainingsmengen.
 
     Val und Test hängen NICHT von n_train ab. Der Trainings-Pool wird mit split_seed gemischt,
-    train = pool[:n_train]. Dadurch gilt train(13) ⊂ train(25) ⊂ ... ⊂ train(400): Unterschiede
+    train = pool[:n_train]. Dadurch gilt train(15) ⊂ train(25) ⊂ ... ⊂ train(400): Unterschiede
     zwischen den Größen sind echte Größeneffekte und keine Stichproben-Effekte.
 
+    mode="contiguous" (Standard): pro Sub-Datensatz werden Val/Test als zusammenhängende Blöcke
+                       vom Ende der Schnittserie genommen -> verhindert Z-Slice Data-Leakage
+                       bei 3D-Volumendaten (FIB-SEM / SBF-SEM).
     mode="random":     globales Mischen (Gefahr: Nachbar-Slices desselben Volumens in Train & Test).
-    mode="contiguous": pro Sub-Datensatz (sortierte Dateinamen) werden Val/Test als Blöcke vom Ende
-                       genommen -> weniger Leakage durch benachbarte Schnitte.
     """
-    pairs = sorted(pairs, key=lambda p: p.name)
+    pairs = sorted(
+        pairs,
+        key=lambda p: (natural_sort_key(p.dataset), natural_sort_key(p.image.name)),
+    )
     n = len(pairs)
     if n_train + n_val + n_test > n:
         raise ValueError(
@@ -130,13 +161,17 @@ def make_splits(
         for p in pairs:
             groups.setdefault(p.dataset, []).append(p)
         test, val, pool = [], [], []
+        rem_t, rem_v, rem_n = n_test, n_val, n
         for g in groups.values():
             m = len(g)
-            t = round(n_test * m / n)
-            v = round(n_val * m / n)
+            t = round(rem_t * m / rem_n) if rem_n > 0 else 0
+            v = round(rem_v * m / rem_n) if rem_n > 0 else 0
             test += g[m - t :]
             val += g[m - t - v : m - t]
             pool += g[: m - t - v]
+            rem_t -= t
+            rem_v -= v
+            rem_n -= m
         rng.shuffle(pool)
     else:
         raise ValueError(f"Unbekannter split_mode: {mode}")
@@ -233,7 +268,7 @@ def get_dataloaders(cfg: dict):
     """Baut train/val/test-Loader aus einer Config. Gibt (loaders, info) zurück."""
     pairs = discover_pairs(cfg["data_root"], cfg.get("datasets"))
     splits = make_splits(pairs, cfg["train_size"], cfg["val_size"], cfg["test_size"],
-                         cfg.get("split_seed", 0), cfg.get("split_mode", "random"))
+                         cfg.get("split_seed", 0), cfg.get("split_mode", "contiguous"))
     aug = dict(flip=cfg.get("aug_flip", True), rot90=cfg.get("aug_rot90", True),
                rot_deg=cfg.get("aug_rot_deg", 0.0), intensity=cfg.get("aug_intensity", 0.2))
     cache = cfg.get("cache_data", True)

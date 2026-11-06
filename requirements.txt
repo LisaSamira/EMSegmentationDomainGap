@@ -1,5 +1,5 @@
-torch>=2.2
-torchvision>=0.17
+torch>=2.6
+torchvision>=0.21
 transformers>=4.56   # DINOv3-Unterstützung
 tifffile>=2023.7
 numpy
