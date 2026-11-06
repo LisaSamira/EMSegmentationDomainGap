@@ -1,0 +1,21 @@
+# Python Cache
+__pycache__/
+*.py[cod]
+
+# Ausgaben und Vorschauen
+preview_output/
+runs/
+wandb/
+
+# Checkpoints / Gewichte
+*.pt
+*.pth
+
+# Lokale Daten
+data/
+
+# OS-Dateien
+.DS_Store
+
+# SBATCH Files
+*.sh

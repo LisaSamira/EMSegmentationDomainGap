@@ -28,15 +28,18 @@ def load_space(path: str) -> dict:
 
 def build_sweep_config(space: dict, train_size: int, fixed: dict) -> dict:
     params = dict(space["parameters"])
-    params.update(space.get("per_train_size", {}).get(train_size, {}))  # größenspezifische Überschreibungen
+    params.update(space.get("per_train_size", {}).get(train_size, {}))
     params.update({k: {"value": v} for k, v in fixed.items() if v is not None})
     params["train_size"] = {"value": train_size}
+    
+    dataset_name = fixed.get("datasets", "unknown")
+    
     cfg = {
-        "name": f"datasize-{train_size}",
+        "name": f"datasize-{train_size}-{dataset_name}",
         "method": space.get("method", "bayes"),
         "metric": space["metric"],
         "parameters": params,
-        "program": "train.py",  # für `wandb agent` (CLI-Modus)
+        "program": "train.py",
     }
     if "early_terminate" in space:
         cfg["early_terminate"] = space["early_terminate"]

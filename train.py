@@ -1,7 +1,7 @@
 """Epochen-basiertes Training + Evaluation (Foreground-IoU, Dice) mit Zeitmessung und W&B-Logging.
 
 Einzelner Lauf:
-    python train.py --data_root /pfad/cem_mitolab --datasets "Bleck2018_SoleusBV2" --train_size 25
+    python train.py --data_root /pfad/cem_mitolab --datasets "Bleck2018_SoleusBV2" --train_size 25 --wandb_mode offline
 Alle Keys aus DEFAULTS sind als --key Wert überschreibbar (auch durch einen wandb-Sweep).
 """
 from __future__ import annotations

@@ -8,7 +8,7 @@ Mit --save_individual speichert es zusätzlich zu dem Kombibild auch _img.png, _
 
 Beispiele:
     # 5 Bilder aus einem Datensatz als Side-by-Side PNGs exportieren:
-    python preview.py --data_root /pfad/cem_mitolab --dataset Bleck2018_SoleusBV2 --num 5
+    python preview.py --data_root /home/ul/ul_student/ul_lxm75/workspaces/pfs7wor9/sdg_workspace/EMPIAR-11037/cem_mitolab --dataset Bleck2018_SoleusBV2 --num 5
 
     # Bestimmte Bilder nach Name exportieren:
     python preview.py --data_root /pfad/cem_mitolab --dataset Bleck2018_SoleusBV2 --names heart_image0.tiff heart_image1.tiff
@@ -124,7 +124,7 @@ def main():
     if not img_dir.is_dir() or not mask_dir.is_dir():
         raise FileNotFoundError(f"Ordner 'images' oder 'masks' fehlt unter {ds_dir}")
 
-    out_dir = Path(args.out_dir)
+    out_dir = Path(args.out_dir) / ds_dir.name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Bildpaare ermitteln
