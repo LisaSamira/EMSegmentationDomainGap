@@ -2,10 +2,15 @@
 __pycache__/
 *.py[cod]
 
+# Logs
+*.log
+logs/
+
 # Ausgaben und Vorschauen
 preview_output/
 runs/
 wandb/
+dataset_analysis/
 
 # Checkpoints / Gewichte
 *.pt

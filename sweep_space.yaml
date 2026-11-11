@@ -4,10 +4,9 @@ method: bayes                 # grid | random | bayes
 metric:
   name: val/best_iou          # monoton steigendes Maximum der Val-IoU (Auswahl nur über Val, nicht Test!)
   goal: maximize
-early_terminate:              # bricht schlechte Läufe früh ab (min_iter zählt geloggte Epochen)
-  type: hyperband
-  min_iter: 10
-  eta: 3
+# Kein early_terminate: Hyperband würde Runs datensatzgrößenabhängig
+# unterschiedlich stark pruning und den Datenmengen-Vergleich verzerren.
+# Early Stopping passiert stattdessen run-lokal über `patience` in train.py.
 
 parameters:
   lr:

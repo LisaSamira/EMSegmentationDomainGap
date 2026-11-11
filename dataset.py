@@ -135,8 +135,9 @@ def make_splits(
     zwischen den Größen sind echte Größeneffekte und keine Stichproben-Effekte.
 
     mode="contiguous" (Standard): pro Sub-Datensatz werden Val/Test als zusammenhängende Blöcke
-                       vom Ende der Schnittserie genommen -> verhindert Z-Slice Data-Leakage
-                       bei 3D-Volumendaten (FIB-SEM / SBF-SEM).
+                       vom Ende der sortierten Liste genommen. Achtung: gruppiert nur nach
+                       Sub-Datensatz, nicht nach LOC/Volume -> bei mehreren LOCs kann der
+                       Schnitt durch ein Volume laufen (Z-Slice-Leakage zwischen Train und Val).
     mode="random":     globales Mischen (Gefahr: Nachbar-Slices desselben Volumens in Train & Test).
     """
     pairs = sorted(
@@ -265,7 +266,10 @@ def _worker_init(worker_id: int):
 
 
 def get_dataloaders(cfg: dict):
-    """Baut train/val/test-Loader aus einer Config. Gibt (loaders, info) zurück."""
+    """Baut train/val/test-Loader aus einer Config. Gibt (loaders, info) zurück.
+
+    info enthält Bildanzahlen und die Dateilisten aller drei Splits (train/val/test).
+    """
     pairs = discover_pairs(cfg["data_root"], cfg.get("datasets"))
     splits = make_splits(pairs, cfg["train_size"], cfg["val_size"], cfg["test_size"],
                          cfg.get("split_seed", 0), cfg.get("split_mode", "contiguous"))
@@ -288,6 +292,8 @@ def get_dataloaders(cfg: dict):
         "n": {k: len(v) for k, v in splits.items()},
         "datasets_in_train": sorted({p.dataset for p in splits["train"]}),
         "train_files": [p.name for p in splits["train"]],
+        "val_files": [p.name for p in splits["val"]],
+        "test_files": [p.name for p in splits["test"]],
     }
     return loaders, info
 

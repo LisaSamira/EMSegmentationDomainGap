@@ -10,6 +10,7 @@ import argparse
 import json
 import math
 import random
+import re
 import time
 from pathlib import Path
 
@@ -73,6 +74,29 @@ def seed_everything(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+DATASET_TAGS = {
+    "Bleck2018_SoleusBV2": "Bleck2018",
+    "Wei2020_MitoEM-H": "Wei2020H",
+    "Wei2020_MitoEM-R": "Wei2020R",
+    "314W440Y68Pf573BO3p2_3D": "314W440",
+    "5j54Gst6j5069xCUpF5M_2D": "5j54Gst",
+}
+
+
+def dataset_tag(datasets: str | list[str] | None) -> str:
+    """Kurzer Datensatzname für Ordnernamen, z. B. 'Bleck2018_SoleusBV2' -> 'Bleck2018'."""
+    if not datasets:
+        return "all"
+    if isinstance(datasets, str):
+        datasets = datasets.split(",")
+    first = str(datasets[0]).strip()
+    if first in DATASET_TAGS:
+        return DATASET_TAGS[first]
+    tag = first.split("_")[0]
+    tag = re.sub(r"[^A-Za-z0-9.-]+", "", tag)
+    return tag or "dataset"
 
 
 class Timer:
@@ -163,16 +187,19 @@ def run(overrides: dict | None = None) -> dict:
     cfg = {**DEFAULTS, **dict(wandb.config)}  # Sweep-Werte haben Vorrang
     seed_everything(cfg["seed"])
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    run_dir = Path(cfg["out_dir"]) / f"n{cfg['train_size']}_{wb.id}"
+    run_dir = Path(cfg["out_dir"]) / f"{dataset_tag(cfg['datasets'])}_n{cfg['train_size']}_{wb.id}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
     with Timer(device) as t_data:
         loaders, info = get_dataloaders(cfg)
+    with open(run_dir / "split.json", "w") as f:
+        json.dump(info, f, indent=2)
     with Timer(device) as t_model:
         model = build_model(cfg).to(device)
     n_train_p = sum(p.numel() for p in model.trainable_parameters())
     n_total_p = sum(p.numel() for p in model.parameters())
     wandb.config.update({"trainable_params": n_train_p, "total_params": n_total_p, "n_images": info["n"],
+                         "val_files": info["val_files"], "test_files": info["test_files"],
                          "gpu": torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu"},
                         allow_val_change=True)
     wandb.log({"time/setup_data_s": t_data.elapsed, "time/setup_model_s": t_model.elapsed}, step=0)
@@ -190,75 +217,105 @@ def run(overrides: dict | None = None) -> dict:
     best_path = run_dir / "best_head.pt"
     train_time_total = 0.0
     bad_epochs = 0
+    epoch = 0
+    test = None
+    status = "completed"
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats()
 
-    for epoch in range(1, cfg["epochs"] + 1):
-        model.train()
-        loss_sum = torch.zeros((), device=device)
-        seen, wait = 0, 0.0
-        with Timer(device) as t_ep:
-            t_prev = time.perf_counter()
-            for b in loaders["train"]:
-                wait += time.perf_counter() - t_prev  # Zeit, die auf den DataLoader gewartet wurde
-                x = b["image"].to(device, non_blocking=True)
-                y = b["mask"].to(device, non_blocking=True)
-                with torch.autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
-                    logits = model(x)
-                loss = criterion(logits.float(), y)
-                opt.zero_grad(set_to_none=True)
-                loss.backward()
-                if cfg["grad_clip"] > 0:
-                    nn.utils.clip_grad_norm_(model.trainable_parameters(), cfg["grad_clip"])
-                opt.step()
-                sched.step()
-                loss_sum += loss.detach() * x.size(0)
-                seen += x.size(0)
+    try:
+        for epoch in range(1, cfg["epochs"] + 1):
+            model.train()
+            loss_sum = torch.zeros((), device=device)
+            seen, wait = 0, 0.0
+            with Timer(device) as t_ep:
                 t_prev = time.perf_counter()
-        train_time_total += t_ep.elapsed
+                for b in loaders["train"]:
+                    wait += time.perf_counter() - t_prev  # Zeit, die auf den DataLoader gewartet wurde
+                    x = b["image"].to(device, non_blocking=True)
+                    y = b["mask"].to(device, non_blocking=True)
+                    with torch.autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
+                        logits = model(x)
+                    loss = criterion(logits.float(), y)
+                    opt.zero_grad(set_to_none=True)
+                    loss.backward()
+                    if cfg["grad_clip"] > 0:
+                        nn.utils.clip_grad_norm_(model.trainable_parameters(), cfg["grad_clip"])
+                    opt.step()
+                    sched.step()
+                    loss_sum += loss.detach() * x.size(0)
+                    seen += x.size(0)
+                    t_prev = time.perf_counter()
+            train_time_total += t_ep.elapsed
 
-        val = evaluate(model, loaders["val"], device, criterion, cfg["threshold"], use_amp)
-        improved = val["iou"] > best["iou"]
-        if improved:
-            best = dict(iou=val["iou"], dice=val["dice"], epoch=epoch)
-            torch.save(model.trainable_state_dict(), best_path)
-            bad_epochs = 0
+            val = evaluate(model, loaders["val"], device, criterion, cfg["threshold"], use_amp)
+            improved = val["iou"] > best["iou"]
+            if improved:
+                best = dict(iou=val["iou"], dice=val["dice"], epoch=epoch)
+                torch.save(model.trainable_state_dict(), best_path)
+                bad_epochs = 0
+            else:
+                bad_epochs += 1
+            wandb.log({
+                "epoch": epoch, "lr": sched.get_last_lr()[0],
+                "train/loss": (loss_sum / seen).item(),
+                "val/loss": val["loss"], "val/iou": val["iou"], "val/dice": val["dice"],
+                "val/iou_img": val["iou_img"], "val/dice_img": val["dice_img"],
+                "val/best_iou": best["iou"],  # monoton -> geeignete Sweep-Metrik
+                "time/train_epoch_s": t_ep.elapsed, "time/train_dataload_wait_s": wait,
+                "time/val_s": val["time_s"], "time/train_total_s": train_time_total,
+            }, step=epoch)
+            if cfg["patience"] > 0 and bad_epochs >= cfg["patience"]:
+                print(f"[run] Early Stopping nach Epoche {epoch} (bester: {best['epoch']})")
+                break
+
+        # --- Test mit bestem Checkpoint (Auswahl nur über Val!) ---
+        model.head.load_state_dict(torch.load(best_path, map_location=device))
+        test = evaluate(model, loaders["test"], device, criterion, cfg["threshold"], use_amp)
+    except BaseException:
+        status = "interrupted"
+        raise
+    finally:
+        # Test auch nach einem Abbruch mit dem besten Checkpoint nachholen.
+        if test is None and best["epoch"] > 0 and best_path.exists():
+            try:
+                model.head.load_state_dict(torch.load(best_path, map_location=device))
+                test = evaluate(model, loaders["test"], device, criterion, cfg["threshold"], use_amp)
+            except Exception as e:
+                print(f"[run] Test-Evaluation nach Abbruch fehlgeschlagen: {e}")
+        peak_mem = torch.cuda.max_memory_allocated() / 2**30 if device.type == "cuda" else 0.0
+        total_time = time.perf_counter() - t_run0
+        summary = {
+            "best_epoch": best["epoch"], "best_val_iou": best["iou"], "epochs_run": epoch,
+            "time/train_total_s": train_time_total,
+            "time/train_mean_epoch_s": train_time_total / max(epoch, 1),
+            "time/run_total_s": total_time, "gpu_peak_mem_gb": peak_mem,
+            "status": status,
+        }
+        if test is not None:
+            summary.update({
+                "test/iou": test["iou"], "test/dice": test["dice"], "test/iou_img": test["iou_img"],
+                "test/dice_img": test["dice_img"], "test/loss": test["loss"],
+                "time/test_s": test["time_s"], "time/test_ms_per_image": test["ms_per_image"],
+            })
+        try:
+            if wandb.run is not None:
+                for k, v in summary.items():
+                    wandb.run.summary[k] = v
+        except Exception:
+            pass
+        with open(run_dir / "results.json", "w") as f:
+            json.dump({"config": cfg, "split": info, "best": best, "val_at_best": best,
+                       "test": test, "summary": summary}, f, indent=2, default=str)
+        if test is not None:
+            print(f"[run] val IoU {best['iou']:.4f} (Ep {best['epoch']}) | test IoU {test['iou']:.4f} "
+                  f"Dice {test['dice']:.4f} | train {train_time_total:.1f}s test {test['time_s']:.2f}s")
         else:
-            bad_epochs += 1
-        wandb.log({
-            "epoch": epoch, "lr": sched.get_last_lr()[0],
-            "train/loss": (loss_sum / seen).item(),
-            "val/loss": val["loss"], "val/iou": val["iou"], "val/dice": val["dice"],
-            "val/iou_img": val["iou_img"], "val/dice_img": val["dice_img"],
-            "val/best_iou": best["iou"],  # monoton -> geeignete Sweep-Metrik
-            "time/train_epoch_s": t_ep.elapsed, "time/train_dataload_wait_s": wait,
-            "time/val_s": val["time_s"], "time/train_total_s": train_time_total,
-        }, step=epoch)
-        if cfg["patience"] > 0 and bad_epochs >= cfg["patience"]:
-            print(f"[run] Early Stopping nach Epoche {epoch} (bester: {best['epoch']})")
-            break
-
-    # --- Test mit bestem Checkpoint (Auswahl nur über Val!) ---
-    model.head.load_state_dict(torch.load(best_path, map_location=device))
-    test = evaluate(model, loaders["test"], device, criterion, cfg["threshold"], use_amp)
-    peak_mem = torch.cuda.max_memory_allocated() / 2**30 if device.type == "cuda" else 0.0
-    total_time = time.perf_counter() - t_run0
-    summary = {
-        "test/iou": test["iou"], "test/dice": test["dice"], "test/iou_img": test["iou_img"],
-        "test/dice_img": test["dice_img"], "test/loss": test["loss"],
-        "best_epoch": best["epoch"], "best_val_iou": best["iou"], "epochs_run": epoch,
-        "time/test_s": test["time_s"], "time/test_ms_per_image": test["ms_per_image"],
-        "time/train_total_s": train_time_total, "time/train_mean_epoch_s": train_time_total / epoch,
-        "time/run_total_s": total_time, "gpu_peak_mem_gb": peak_mem,
-    }
-    for k, v in summary.items():
-        wandb.run.summary[k] = v
-    with open(run_dir / "results.json", "w") as f:
-        json.dump({"config": cfg, "split": info, "best": best, "val_at_best": best, "test": test,
-                   "summary": summary}, f, indent=2, default=str)
-    print(f"[run] val IoU {best['iou']:.4f} (Ep {best['epoch']}) | test IoU {test['iou']:.4f} "
-          f"Dice {test['dice']:.4f} | train {train_time_total:.1f}s test {test['time_s']:.2f}s")
-    wandb.finish()
+            print(f"[run] {status}: val IoU {best['iou']:.4f} (Ep {best['epoch']}) nach {epoch} Epochen")
+        try:
+            wandb.finish()
+        except Exception:
+            pass
     return summary
 
 

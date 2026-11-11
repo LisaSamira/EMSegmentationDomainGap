@@ -15,7 +15,8 @@ Initialer Trainingscode für die Masterarbeit *„What makes EM datasets differe
 | `train.py` | Epochen-Training, Evaluation, Zeitmessung, W&B-Logging, CLI |
 | `sweep.py` | legt pro Trainingsgröße einen W&B-Sweep an und startet Agents |
 | `sweep_space.yaml` | Suchraum des Sweeps (hier anpassen) |
-| `preview.py` | Konvertiert TIFFs + Masken nach PNG (Side-by-Side Vorschau) |
+| `preview.py` | Konvertiert TIFFs + Masken nach PNG (Side-by-Side Vorschau) und schreibt `preview_stats.csv` (Mitochondrienfläche pro Bild) |
+| `dataset_analysis.py` | Vollständige Datensatz-Analyse: Fläche pro Bild, Mittelwert, 0-%-Bilder, Instanzen, LOC/ROI, Histogramm |
 | `requirements.txt` | Abhängigkeiten |
 
 ## Installation
@@ -55,6 +56,22 @@ Listet alle Sub-Datensätze mit mindestens 450 Bildern auf (in CEM-MitoLab gibt 
 
 Um Domänen-Eigenschaften und Unterschiede sauber zu erforschen (*„What makes EM datasets different?“*), werden Datensätze **niemals vermischt/gepoolt**, sondern jeder Datensatz wird separat trainiert und evaluiert: `--datasets "<SubDataset>"`.
 
+## Datensatz-Analyse
+
+```bash
+# Vorschau + Statistik (Mitochondrienfläche pro Bild)
+python preview.py --data_root /pfad/cem_mitolab --dataset Bleck2018_SoleusBV2 --num 5
+
+# Statistik für bereits vorhandene Previews nachträglich schreiben
+# (mit --data_root werden auch die Instanzanzahlen aus den Originalmasken ergänzt)
+python preview.py --report_only --out_dir preview_output --data_root /pfad/cem_mitolab
+
+# Vollständige Analyse (Fläche, Instanzen, LOC/ROI, Histogramm)
+python dataset_analysis.py --data_root /pfad/cem_mitolab --dataset Bleck2018_SoleusBV2
+```
+
+`preview.py` schreibt `preview_stats.csv` in den Ausgabeordner; `--report_only` erzeugt sie nachträglich aus vorhandenen `_preview.png`. `dataset_analysis.py` schreibt pro Datensatz `per_image.csv`, `per_loc.csv`, `per_roi.csv`, `area_histogram.csv`, `summary.json` und `summary.txt` unter `dataset_analysis/<dataset>/`.
+
 ## Schnellstart
 
 ```bash
@@ -91,7 +108,7 @@ python sweep.py ... --set img_size=224 --set patience=0
 - **Val und Test sind fest** (`val_size`, `test_size`, Default je 25) und hängen nicht von `train_size` ab.
 - **Trainingsmengen sind geschachtelt:** `train(15) ⊂ train(25) ⊂ … ⊂ train(400)`, solange `split_seed` gleich bleibt. Unterschiede zwischen Größen sind so echte Größeneffekte.
 - `split_mode`:
-  - `contiguous` (Standard): Val/Test werden pro Sub-Datensatz als zusammenhängende Blöcke vom Ende der Schnittserie genommen. Verhindert Z-Slice Data-Leakage bei 3D-Volumendaten (FIB-SEM/SBF-SEM), da benachbarte Schnitte nicht zwischen Train und Test aufgeteilt werden.
+  - `contiguous` (Standard): Val/Test werden pro Sub-Datensatz als zusammenhängende Blöcke vom Ende der sortierten Liste genommen. Achtung: gruppiert nur nach Sub-Datensatz, nicht nach LOC/Volume – bei mehreren LOCs kann der Schnitt durch ein Volume laufen (siehe „Bekannte Einschränkungen“).
   - `random`: globales Mischen (führt bei 3D-Volumendaten zu künstlich überhöhten Scores durch Nachbarschnitt-Leakage).
 
 ## Modell
@@ -112,7 +129,7 @@ Neue Klasse mit `forward(x) -> Logits [B,1,H,W]`, `trainable_parameters()` und `
 - AdamW, Cosine-Schedule mit linearem Warmup, Gradient Clipping, bf16-Autocast (nur auf GPU)
 - Loss: BCE + `dice_weight` × Dice-Loss
 - Bestes Modell nach **Val-IoU**; Early Stopping über `patience` (Default 20, `0` = aus)
-- Nach dem Training wird der beste Checkpoint einmal auf dem **Testset** ausgewertet
+- Nach dem Training (oder nach einem Abbruch) wird der beste Checkpoint einmal auf dem **Testset** ausgewertet
 
 ### Metriken
 
@@ -136,7 +153,7 @@ Alle Zeiten sind CUDA-synchronisiert (`torch.cuda.synchronize`) und werden pro E
 | `time/run_total_s` | gesamte Laufzeit |
 | `gpu_peak_mem_gb` | maximaler GPU-Speicher |
 
-Bei aktivem Early Stopping hängt die Trainingszeit von der Zahl der gelaufenen Epochen ab (`epochs_run`). Für exakt vergleichbare Zeiten `--patience 0` setzen.
+Bei aktivem Early Stopping hängt die Trainingszeit von der Zahl der gelaufenen Epochen ab (`epochs_run`). Für volle Epochen-Budgets `--patience 0` setzen.
 
 ## Sweep-Konfiguration
 
@@ -144,25 +161,27 @@ Der Suchraum steht in `sweep_space.yaml` und wird ohne Codeänderung angepasst:
 
 - `method`: `grid`, `random` oder `bayes` (Default)
 - `metric`: `val/best_iou` (monoton steigendes Maximum der Val-IoU), niemals Test
-- `early_terminate`: Hyperband
+- kein `early_terminate`/Hyperband: Pruning würde Runs datensatzgrößenabhängig unterschiedlich stark abbrechen und den Datenmengen-Vergleich verzerren. Early Stopping passiert run-lokal über `patience`.
 - `parameters`: Lernrate, Weight Decay, Batchgröße, Head-Kanäle, Dropout, Dice-Gewicht, Anzahl Feature-Layer
-- `per_train_size`: Überschreibungen pro Trainingsgröße. Standardmäßig die Epochenzahl (200/150/100/60/40/30), damit die Zahl der Optimierungsschritte für kleine Sets vergleichbar bleibt.
+- `per_train_size`: Überschreibungen pro Trainingsgröße (Epochen 200/150/100/60/40/30). Achtung: Optimierungsschritte sind `epochs × ceil(train_size / batch_size)`; da `batch_size` mitgesweept wird, sind die Schritte über die Größen **nicht** exakt vergleichbar.
 
 Für jede Trainingsgröße wird ein eigener Sweep angelegt (`datasize-<n>`), Runs werden in W&B nach `train_size_<n>` gruppiert.
 
 ## Ausgabe
 
 ```
-runs/n<train_size>_<wandb_run_id>/
-├── best_head.pt     # Gewichte des Heads
-└── results.json     # Config, Split-Info, beste Val-Werte, Test-Metriken, Zeiten
+runs/<dataset>_n<train_size>_<wandb_run_id>/
+├── best_head.pt     # Gewichte des Heads (bei erster Val-Verbesserung)
+├── split.json       # Dateilisten für Train/Val/Test (direkt nach dem Laden)
+└── results.json     # Config, Split-Info, beste Val-Werte, Test-Metriken, Zeiten, status
 ```
 
-`results.json` enthält auch die Dateinamen der verwendeten Trainingsbilder.
+`results.json` wird auch bei einem Abbruch geschrieben (`status: "interrupted"`); der Test wird dann mit dem besten Checkpoint nachgeholt. Es enthält die Dateinamen von Trainings-, Val- und Testbildern.
 
 ## Bekannte Einschränkungen
 
 - Pro Sweep-Lauf ein Seed. Für die finale Bewertung der besten Konfiguration (3 Seeds laut Konzept) ist noch keine Automatisierung enthalten.
+- `split_mode="contiguous"` gruppiert nur nach Sub-Datensatz, nicht nach LOC/Volume. Enthält ein Sub-Datensatz mehrere LOCs, kann der Schnitt mitten durch ein Volume laufen (Train/Val aus derselben Serie). Fix: pro (Dataset, LOC) gruppieren.
 - Bei 15 Trainingsbildern und einer Val-Menge von 25 Bildern ist die Val-IoU verrauscht, die Sweep-Ergebnisse für kleine Größen sind entsprechend mit Vorsicht zu lesen. `val_size` lässt sich erhöhen.
 - Die Pipeline ist bisher nur für Training und Test auf derselben Datenmenge ausgelegt. `evaluate()` in `train.py` ist aber so gebaut, dass es später für Cross-Dataset-Tests (N×N-Matrix) wiederverwendet werden kann.
-- Der Code wurde bislang nur syntaktisch geprüft (`py_compile`), nicht mit echten Daten und GPU ausgeführt.
+- Der Code wurde mit echten Daten auf GPU ausgeführt (Sweeps in `runs/`).
